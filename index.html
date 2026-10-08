@@ -1,8 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Earn With Mani</title>
 
-<!-- Meta Pixel Code -->
+<!-- Meta Pixel Code (sets the _fbp cookie) -->
 <script>
 !function(f,b,e,v,n,t,s)
 {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
@@ -19,10 +22,7 @@ fbq('track', 'PageView');
 src="https://www.facebook.com/tr?id=2616011045511860&ev=PageView&noscript=1"
 /></noscript>
 <!-- End Meta Pixel Code -->
- 
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Earn With Mani</title>
+
 <style>
   * { box-sizing: border-box; }
   body {
@@ -123,6 +123,7 @@ src="https://www.facebook.com/tr?id=2616011045511860&ev=PageView&noscript=1"
 
     <div class="name">Earn With Mani</div>
 
+    <!-- href is a fallback; the script replaces it with the tracked invite link -->
     <a id="joinBtn" class="join-btn" href="https://t.me/+HfQucG0QvbE2YjI1" rel="noopener">
       <span class="icon">&#9992;&#65039;</span> Join Free Telegram
     </a>
@@ -135,20 +136,118 @@ src="https://www.facebook.com/tr?id=2616011045511860&ev=PageView&noscript=1"
       <span>SECONDS</span>
     </div>
 
-    <div class="disclaimer">
-      
-    </div>
+    <div class="disclaimer"></div>
   </div>
 
   <script>
-    let seconds = 60;
-    let redirected = false;
+    // ---------------- Config ----------------
+    const TRACK_URL = 'https://api.digioffers.website/api/track';
+    const CLIENT_ID = 'KamilBhai';          // must match client_id in clients.json exactly
+    const FBP_WAIT_MS = 2000;               // max wait for the pixel to set _fbp
+    const REQUEST_TIMEOUT_MS = 8000;        // max wait for the backend
+    const CLICK_WAIT_MS = 3000;             // max wait on click if tracking is still running
+
     const timerEl = document.getElementById('timer');
     const btn = document.getElementById('joinBtn');
 
-    btn.addEventListener('click', function () {
+    // ---------------- Helpers ----------------
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    function getCookie(name) {
+      const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+      return m ? decodeURIComponent(m[1]) : null;
+    }
+
+    // The Pixel sets _fbp shortly after it loads, so wait briefly for it
+    async function waitForFbp(maxMs) {
+      const start = Date.now();
+      while (Date.now() - start < maxMs) {
+        const v = getCookie('_fbp');
+        if (v) return v;
+        await sleep(100);
+      }
+      return getCookie('_fbp');
+    }
+
+    function safeStorage(action, key, value) {
+      try {
+        if (action === 'get') return sessionStorage.getItem(key);
+        sessionStorage.setItem(key, value);
+      } catch (e) { /* storage blocked: ignore */ }
+      return null;
+    }
+
+    // ---------------- Tracking ----------------
+    let trackDone = false;
+
+    async function trackVisit() {
+      try {
+        // fbclid from the URL (remembered for this tab so a reload keeps it)
+        const urlFbclid = new URLSearchParams(window.location.search).get('fbclid');
+        if (urlFbclid) safeStorage('set', 'tg_fbclid', urlFbclid);
+        const fbclid = urlFbclid || safeStorage('get', 'tg_fbclid') || null;
+
+        // Reuse the invite link on reload so we don't create extra links
+        const cacheKey = 'tg_invite_' + (fbclid || 'none');
+        const cached = safeStorage('get', cacheKey);
+        if (cached) {
+          btn.href = cached;
+          return;
+        }
+
+        const fbp = await waitForFbp(FBP_WAIT_MS);
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+        const res = await fetch(TRACK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: CLIENT_ID,
+            fbclid: fbclid,
+            fbp: fbp,
+            event_source_url: window.location.href
+          }),
+          signal: controller.signal
+        });
+        clearTimeout(timeout);
+
+        const data = await res.json();
+        if (data && data.ok && data.invite_link) {
+          btn.href = data.invite_link;
+          safeStorage('set', cacheKey, data.invite_link);
+        } else {
+          console.warn('Tracking failed, using fallback link:', data && data.error);
+        }
+      } catch (err) {
+        console.warn('Tracking error, using fallback link:', err.message);
+      } finally {
+        trackDone = true;
+      }
+    }
+
+    const trackPromise = trackVisit();
+
+    // ---------------- Redirect + countdown ----------------
+    let seconds = 60;
+    let redirected = false;
+    let interval;
+
+    // Goes to Telegram, waiting briefly for the tracked link if it isn't ready yet
+    async function goToTelegram() {
+      if (redirected) return;
       redirected = true;
       clearInterval(interval);
+      if (!trackDone) {
+        await Promise.race([trackPromise, sleep(CLICK_WAIT_MS)]);
+      }
+      window.location.href = btn.href;
+    }
+
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      goToTelegram();
     });
 
     function pad(n) {
@@ -156,19 +255,16 @@ src="https://www.facebook.com/tr?id=2616011045511860&ev=PageView&noscript=1"
     }
 
     function updateTimer() {
-      timerEl.textContent = `00 : 00 : 00 : ${pad(seconds)}`;
+      timerEl.textContent = `00 : 00 : 00 : ${pad(Math.max(seconds, 0))}`;
       if (seconds <= 0) {
-        clearInterval(interval);
-        if (!redirected) {
-          redirected = true;
-          window.location.href = btn.href;
-        }
+        goToTelegram();
+        return;
       }
       seconds--;
     }
 
     updateTimer();
-    const interval = setInterval(updateTimer, 1000);
+    interval = setInterval(updateTimer, 1000);
   </script>
 
 </body>
